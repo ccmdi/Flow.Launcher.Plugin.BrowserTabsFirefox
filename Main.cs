@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -16,10 +18,14 @@ namespace Flow.Launcher.Plugin.ShimTabs
         private PluginInitContext _context;
         private const string Host = "127.0.0.1";
         private const int Port = 19876;
+        private static readonly HttpClient _httpClient = new HttpClient();
+        private string _faviconCachePath;
 
         public Task InitAsync(PluginInitContext context)
         {
             _context = context;
+            _faviconCachePath = Path.Combine(context.CurrentPluginMetadata.PluginDirectory, "FaviconCache");
+            Directory.CreateDirectory(_faviconCachePath);
             return Task.CompletedTask;
         }
 
@@ -42,7 +48,7 @@ namespace Flow.Launcher.Plugin.ShimTabs
                 {
                     Title = x.Tab.Title,
                     SubTitle = x.Tab.Url,
-                    IcoPath = "Images/icon.png",
+                    IcoPath = GetFaviconPath(x.Tab),
                     TitleHighlightData = x.TitleMatch.MatchData,
                     Action = _ =>
                     {
@@ -51,6 +57,40 @@ namespace Flow.Launcher.Plugin.ShimTabs
                     }
                 })
                 .ToList();
+        }
+
+        private string GetFaviconPath(ShimTab tab)
+        {
+            if (string.IsNullOrEmpty(tab.FavIconUrl))
+                return "Images/icon.png";
+
+            try
+            {
+                var uri = new Uri(tab.Url);
+                var safeFileName = $"{uri.Host}.png";
+                var cachePath = Path.Combine(_faviconCachePath, safeFileName);
+
+                if (File.Exists(cachePath))
+                    return cachePath;
+
+                // Fire and forget download for next time
+                _ = DownloadFaviconAsync(tab.FavIconUrl, cachePath);
+                return "Images/icon.png";
+            }
+            catch
+            {
+                return "Images/icon.png";
+            }
+        }
+
+        private async Task DownloadFaviconAsync(string url, string destPath)
+        {
+            try
+            {
+                var bytes = await _httpClient.GetByteArrayAsync(url);
+                await File.WriteAllBytesAsync(destPath, bytes);
+            }
+            catch { }
         }
 
         private async Task<List<ShimTab>> FetchTabsAsync()
@@ -96,5 +136,6 @@ namespace Flow.Launcher.Plugin.ShimTabs
         [JsonPropertyName("windowId")] public long WindowId { get; set; }
         [JsonPropertyName("title")] public string Title { get; set; }
         [JsonPropertyName("url")] public string Url { get; set; }
+        [JsonPropertyName("favIconUrl")] public string FavIconUrl { get; set; }
     }
 }
