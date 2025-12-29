@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -18,6 +19,7 @@ namespace Flow.Launcher.Plugin.ShimTabs
         private const string Host = "127.0.0.1";
         private const int Port = 19876;
         private string _faviconCachePath;
+        private static readonly HttpClient _httpClient = new HttpClient();
 
         public Task InitAsync(PluginInitContext context)
         {
@@ -66,15 +68,22 @@ namespace Flow.Launcher.Plugin.ShimTabs
             {
                 var uri = new Uri(tab.Url);
                 var safeFileName = uri.Host.Replace(":", "_");
-                var basePath = Path.Combine(_faviconCachePath, safeFileName);
+                var cachePath = Path.Combine(_faviconCachePath, safeFileName + ".png");
 
+                // Return cached if exists
+                if (File.Exists(cachePath))
+                    return cachePath;
+
+                // Try to save from data URI
                 if (tab.FavIconUrl.StartsWith("data:"))
                 {
-                    var saved = SaveDataUri(tab.FavIconUrl, basePath);
-                    if (saved != null)
-                        return saved;
+                    var saved = TrySaveDataUri(tab.FavIconUrl, cachePath);
+                    if (saved)
+                        return cachePath;
                 }
 
+                // Fallback: fetch from Google
+                _ = FetchFromGoogleAsync(uri.Host, cachePath);
                 return "Images/icon.png";
             }
             catch
@@ -83,39 +92,46 @@ namespace Flow.Launcher.Plugin.ShimTabs
             }
         }
 
-        private string SaveDataUri(string dataUri, string basePathNoExt)
+        private bool TrySaveDataUri(string dataUri, string pngPath)
         {
             try
             {
-                // Format: data:image/png;base64,XXXX or data:image/svg+xml;base64,XXXX
                 var match = System.Text.RegularExpressions.Regex.Match(
                     dataUri, @"^data:image/([^;]+);base64,(.+)$");
 
                 if (!match.Success)
-                    return null;
+                    return false;
 
-                var imageType = match.Groups[1].Value; // png, svg+xml, x-icon, etc.
+                var imageType = match.Groups[1].Value;
                 var base64Data = match.Groups[2].Value;
                 var bytes = Convert.FromBase64String(base64Data);
 
-                // Map MIME subtypes to file extensions
-                var ext = imageType switch
+                // Only handle formats we know work: png, ico, jpeg
+                if (imageType == "png" || imageType == "jpeg" || imageType == "jpg" ||
+                    imageType == "x-icon" || imageType == "vnd.microsoft.icon")
                 {
-                    "svg+xml" => ".svg",
-                    "x-icon" => ".ico",
-                    "vnd.microsoft.icon" => ".ico",
-                    "jpeg" => ".jpg",
-                    _ => $".{imageType}"
-                };
+                    File.WriteAllBytes(pngPath, bytes);
+                    return true;
+                }
 
-                var fullPath = basePathNoExt + ext;
-                File.WriteAllBytes(fullPath, bytes);
-                return fullPath;
+                // SVG or unknown - let Google handle it
+                return false;
             }
             catch
             {
-                return null;
+                return false;
             }
+        }
+
+        private async Task FetchFromGoogleAsync(string domain, string destPath)
+        {
+            try
+            {
+                var url = $"https://www.google.com/s2/favicons?domain={domain}&sz=128";
+                var bytes = await _httpClient.GetByteArrayAsync(url);
+                await File.WriteAllBytesAsync(destPath, bytes);
+            }
+            catch { }
         }
 
         private async Task<List<ShimTab>> FetchTabsAsync()
