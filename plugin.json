@@ -1,0 +1,11 @@
+{
+    "ID": "0d5c04a3-a9b1-40a1-9315-cd49f0f0516b",
+    "ActionKeywords": ["t"],
+    "Name": "Browser Tabs (Firefox)",
+    "Description": "Switch tabs",
+    "Author": "ccmdi",
+    "Version": "1.0.0",
+    "Language": "csharp",
+    "ExecuteFileName": "BrowserTabFirefox.dll",
+    "IcoPath": "Images\\icon.png"
+  }
