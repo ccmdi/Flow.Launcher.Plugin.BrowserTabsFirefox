@@ -67,14 +67,24 @@ namespace Flow.Launcher.Plugin.ShimTabs
             try
             {
                 var uri = new Uri(tab.Url);
-                var safeFileName = $"{uri.Host}.png";
+                var safeFileName = uri.Host.Replace(":", "_");
                 var cachePath = Path.Combine(_faviconCachePath, safeFileName);
 
-                if (File.Exists(cachePath))
-                    return cachePath;
+                var existing = Directory.GetFiles(_faviconCachePath, safeFileName + ".*").FirstOrDefault();
+                if (existing != null)
+                    return existing;
 
-                // Fire and forget download for next time
-                _ = DownloadFaviconAsync(tab.FavIconUrl, cachePath);
+                if (tab.FavIconUrl.StartsWith("data:"))
+                {
+                    var saved = SaveDataUri(tab.FavIconUrl, cachePath);
+                    if (saved != null)
+                        return saved;
+                }
+                else
+                {
+                    _ = DownloadFaviconAsync(tab.FavIconUrl, cachePath);
+                }
+
                 return "Images/icon.png";
             }
             catch
@@ -83,12 +93,39 @@ namespace Flow.Launcher.Plugin.ShimTabs
             }
         }
 
-        private async Task DownloadFaviconAsync(string url, string destPath)
+        private string SaveDataUri(string dataUri, string basePathNoExt)
+        {
+            try
+            {
+                // Format: data:image/png;base64,XXXX or data:image/svg+xml;base64,XXXX
+                var match = System.Text.RegularExpressions.Regex.Match(
+                    dataUri, @"^data:image/([^;]+);base64,(.+)$");
+
+                if (!match.Success)
+                    return null;
+
+                var imageType = match.Groups[1].Value; // png, svg+xml, etc.
+                var base64Data = match.Groups[2].Value;
+                var bytes = Convert.FromBase64String(base64Data);
+
+                var ext = imageType.Contains("svg") ? ".svg" : $".{imageType}";
+                var fullPath = basePathNoExt + ext;
+
+                File.WriteAllBytes(fullPath, bytes);
+                return fullPath;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private async Task DownloadFaviconAsync(string url, string basePathNoExt)
         {
             try
             {
                 var bytes = await _httpClient.GetByteArrayAsync(url);
-                await File.WriteAllBytesAsync(destPath, bytes);
+                await File.WriteAllBytesAsync(basePathNoExt + ".png", bytes);
             }
             catch { }
         }
@@ -98,16 +135,31 @@ namespace Flow.Launcher.Plugin.ShimTabs
             try
             {
                 using var client = new TcpClient();
+                client.ReceiveTimeout = 100;
                 await client.ConnectAsync(Host, Port);
                 using var stream = client.GetStream();
 
                 var cmd = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new { action = "get_tabs" }));
                 await stream.WriteAsync(cmd, 0, cmd.Length);
 
-                var buffer = new byte[128 * 1024];
-                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
-                var json = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                using var ms = new MemoryStream();
+                var buffer = new byte[256 * 1024];
 
+                var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
+                if (bytesRead > 0)
+                    ms.Write(buffer, 0, bytesRead);
+
+                stream.ReadTimeout = 50;
+                try
+                {
+                    while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) > 0)
+                    {
+                        ms.Write(buffer, 0, bytesRead);
+                    }
+                }
+                catch (IOException) { }
+
+                var json = Encoding.UTF8.GetString(ms.ToArray());
                 return JsonSerializer.Deserialize<List<ShimTab>>(json) ?? new List<ShimTab>();
             }
             catch
