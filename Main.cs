@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -18,7 +17,6 @@ namespace Flow.Launcher.Plugin.ShimTabs
         private PluginInitContext _context;
         private const string Host = "127.0.0.1";
         private const int Port = 19876;
-        private static readonly HttpClient _httpClient = new HttpClient();
         private string _faviconCachePath;
 
         public Task InitAsync(PluginInitContext context)
@@ -68,21 +66,13 @@ namespace Flow.Launcher.Plugin.ShimTabs
             {
                 var uri = new Uri(tab.Url);
                 var safeFileName = uri.Host.Replace(":", "_");
-                var cachePath = Path.Combine(_faviconCachePath, safeFileName);
-
-                var existing = Directory.GetFiles(_faviconCachePath, safeFileName + ".*").FirstOrDefault();
-                if (existing != null)
-                    return existing;
+                var basePath = Path.Combine(_faviconCachePath, safeFileName);
 
                 if (tab.FavIconUrl.StartsWith("data:"))
                 {
-                    var saved = SaveDataUri(tab.FavIconUrl, cachePath);
+                    var saved = SaveDataUri(tab.FavIconUrl, basePath);
                     if (saved != null)
                         return saved;
-                }
-                else
-                {
-                    _ = DownloadFaviconAsync(tab.FavIconUrl, cachePath);
                 }
 
                 return "Images/icon.png";
@@ -104,13 +94,21 @@ namespace Flow.Launcher.Plugin.ShimTabs
                 if (!match.Success)
                     return null;
 
-                var imageType = match.Groups[1].Value; // png, svg+xml, etc.
+                var imageType = match.Groups[1].Value; // png, svg+xml, x-icon, etc.
                 var base64Data = match.Groups[2].Value;
                 var bytes = Convert.FromBase64String(base64Data);
 
-                var ext = imageType.Contains("svg") ? ".svg" : $".{imageType}";
-                var fullPath = basePathNoExt + ext;
+                // Map MIME subtypes to file extensions
+                var ext = imageType switch
+                {
+                    "svg+xml" => ".svg",
+                    "x-icon" => ".ico",
+                    "vnd.microsoft.icon" => ".ico",
+                    "jpeg" => ".jpg",
+                    _ => $".{imageType}"
+                };
 
+                var fullPath = basePathNoExt + ext;
                 File.WriteAllBytes(fullPath, bytes);
                 return fullPath;
             }
@@ -118,16 +116,6 @@ namespace Flow.Launcher.Plugin.ShimTabs
             {
                 return null;
             }
-        }
-
-        private async Task DownloadFaviconAsync(string url, string basePathNoExt)
-        {
-            try
-            {
-                var bytes = await _httpClient.GetByteArrayAsync(url);
-                await File.WriteAllBytesAsync(basePathNoExt + ".png", bytes);
-            }
-            catch { }
         }
 
         private async Task<List<ShimTab>> FetchTabsAsync()
