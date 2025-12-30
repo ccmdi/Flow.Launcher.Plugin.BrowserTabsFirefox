@@ -21,6 +21,10 @@ namespace Flow.Launcher.Plugin.ShimTabs
         private string _faviconCachePath;
         private static readonly HttpClient _httpClient = new HttpClient();
 
+        private List<BrowserTab> _cachedTabs;
+        private DateTime _cacheTime;
+        private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(1);
+
         public Task InitAsync(PluginInitContext context)
         {
             _context = context;
@@ -59,11 +63,8 @@ namespace Flow.Launcher.Plugin.ShimTabs
                 .ToList();
         }
 
-        private string GetFaviconPath(ShimTab tab)
+        private string GetFaviconPath(BrowserTab tab)
         {
-            if (string.IsNullOrEmpty(tab.FavIconUrl))
-                return "Images/icon.png";
-
             try
             {
                 var uri = new Uri(tab.Url);
@@ -74,52 +75,12 @@ namespace Flow.Launcher.Plugin.ShimTabs
                 if (File.Exists(cachePath))
                     return cachePath;
 
-                // Try to save from data URI
-                if (tab.FavIconUrl.StartsWith("data:"))
-                {
-                    var saved = TrySaveDataUri(tab.FavIconUrl, cachePath);
-                    if (saved)
-                        return cachePath;
-                }
-
-                // Fallback: fetch from Google
                 _ = FetchFromGoogleAsync(uri.Host, cachePath);
                 return "Images/icon.png";
             }
             catch
             {
                 return "Images/icon.png";
-            }
-        }
-
-        private bool TrySaveDataUri(string dataUri, string pngPath)
-        {
-            try
-            {
-                var match = System.Text.RegularExpressions.Regex.Match(
-                    dataUri, @"^data:image/([^;]+);base64,(.+)$");
-
-                if (!match.Success)
-                    return false;
-
-                var imageType = match.Groups[1].Value;
-                var base64Data = match.Groups[2].Value;
-                var bytes = Convert.FromBase64String(base64Data);
-
-                // Only handle formats we know work: png, ico, jpeg
-                if (imageType == "png" || imageType == "jpeg" || imageType == "jpg" ||
-                    imageType == "x-icon" || imageType == "vnd.microsoft.icon")
-                {
-                    File.WriteAllBytes(pngPath, bytes);
-                    return true;
-                }
-
-                // SVG or unknown - let Google handle it
-                return false;
-            }
-            catch
-            {
-                return false;
             }
         }
 
@@ -134,8 +95,11 @@ namespace Flow.Launcher.Plugin.ShimTabs
             catch { }
         }
 
-        private async Task<List<ShimTab>> FetchTabsAsync()
+        private async Task<List<BrowserTab>> FetchTabsAsync()
         {
+            if (_cachedTabs != null && DateTime.Now - _cacheTime < CacheDuration)
+                return _cachedTabs;
+
             try
             {
                 using var client = new TcpClient();
@@ -147,7 +111,7 @@ namespace Flow.Launcher.Plugin.ShimTabs
                 await stream.WriteAsync(cmd, 0, cmd.Length);
 
                 using var ms = new MemoryStream();
-                var buffer = new byte[256 * 1024];
+                var buffer = new byte[64 * 1024];
 
                 var bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length);
                 if (bytesRead > 0)
@@ -164,11 +128,13 @@ namespace Flow.Launcher.Plugin.ShimTabs
                 catch (IOException) { }
 
                 var json = Encoding.UTF8.GetString(ms.ToArray());
-                return JsonSerializer.Deserialize<List<ShimTab>>(json) ?? new List<ShimTab>();
+                _cachedTabs = JsonSerializer.Deserialize<List<BrowserTab>>(json) ?? new List<BrowserTab>();
+                _cacheTime = DateTime.Now;
+                return _cachedTabs;
             }
             catch
             {
-                return new List<ShimTab>();
+                return _cachedTabs ?? new List<BrowserTab>();
             }
         }
 
@@ -186,12 +152,11 @@ namespace Flow.Launcher.Plugin.ShimTabs
         }
     }
 
-    public class ShimTab
+    public class BrowserTab
     {
         [JsonPropertyName("id")] public long Id { get; set; }
         [JsonPropertyName("windowId")] public long WindowId { get; set; }
         [JsonPropertyName("title")] public string Title { get; set; }
         [JsonPropertyName("url")] public string Url { get; set; }
-        [JsonPropertyName("favIconUrl")] public string FavIconUrl { get; set; }
     }
 }
